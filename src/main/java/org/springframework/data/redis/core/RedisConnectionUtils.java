@@ -20,6 +20,8 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.transaction.support.ResourceHolder;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationAdapter;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.Assert;
 
@@ -39,8 +41,8 @@ public abstract class RedisConnectionUtils {
 	 * @param factory connection factory
 	 * @return a new Redis connection
 	 */
-	public static RedisConnection bindConnection(RedisConnectionFactory factory) {
-		return doGetConnection(factory, true, true);
+	public static RedisConnection bindConnection(RedisConnectionFactory factory, boolean enableTranactionSupport) {
+		return doGetConnection(factory, true, true, enableTranactionSupport);
 	}
 
 	/**
@@ -49,10 +51,11 @@ public abstract class RedisConnectionUtils {
 	 * otherwise.
 	 * 
 	 * @param factory connection factory for creating the connection
+	 * @param enableTranactionSupport
 	 * @return an active Redis connection
 	 */
-	public static RedisConnection getConnection(RedisConnectionFactory factory) {
-		return doGetConnection(factory, true, false);
+	public static RedisConnection getConnection(RedisConnectionFactory factory, boolean enableTranactionSupport) {
+		return doGetConnection(factory, true, false, enableTranactionSupport);
 	}
 
 	/**
@@ -64,32 +67,68 @@ public abstract class RedisConnectionUtils {
 	 * @param allowCreate whether a new (unbound) connection should be created when no connection can be found for the
 	 *          current thread
 	 * @param bind binds the connection to the thread, in case one was created
+	 * @param enableTransactionSupport
 	 * @return an active Redis connection
 	 */
-	public static RedisConnection doGetConnection(RedisConnectionFactory factory, boolean allowCreate, boolean bind) {
+	public static RedisConnection doGetConnection(RedisConnectionFactory factory, boolean allowCreate, boolean bind,
+			boolean enableTransactionSupport) {
 		Assert.notNull(factory, "No RedisConnectionFactory specified");
 
 		RedisConnectionHolder connHolder = (RedisConnectionHolder) TransactionSynchronizationManager.getResource(factory);
-		// TODO: investigate tx synchronization
 
-		if (connHolder != null)
+		if (connHolder != null) {
+			if (enableTransactionSupport) {
+				potentiallyRegisterTransactionSynchronisation(connHolder);
+			}
 			return connHolder.getConnection();
+		}
 
 		if (!allowCreate) {
 			throw new IllegalArgumentException("No connection found and allowCreate = false");
 		}
 
-		if (log.isDebugEnabled())
+		if (log.isDebugEnabled()) {
 			log.debug("Opening RedisConnection");
+		}
 
 		RedisConnection conn = factory.getConnection();
 
 		if (bind) {
 			connHolder = new RedisConnectionHolder(conn);
 			TransactionSynchronizationManager.bindResource(factory, connHolder);
+			if (enableTransactionSupport) {
+				potentiallyRegisterTransactionSynchronisation(connHolder);
+			}
 			return connHolder.getConnection();
 		}
 		return conn;
+	}
+
+	private static void potentiallyRegisterTransactionSynchronisation(final RedisConnectionHolder connHolder) {
+
+		if (TransactionSynchronizationManager.isActualTransactionActive()
+				&& !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+
+			final RedisConnection connection = connHolder.getConnection();
+
+			if (!connHolder.isTransactionSyncronisationActive()) {
+				connHolder.setTransactionSyncronisationActive(true);
+				connection.multi();
+
+				TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+					@Override
+					public void afterCompletion(int status) {
+						if (TransactionSynchronization.STATUS_COMMITTED == status) {
+							connection.exec();
+						}
+						if (TransactionSynchronization.STATUS_ROLLED_BACK == status) {
+							connection.discard();
+						}
+						connHolder.setTransactionSyncronisationActive(false);
+					}
+				});
+			}
+		}
 	}
 
 	/**
@@ -147,6 +186,7 @@ public abstract class RedisConnectionUtils {
 
 		private boolean isVoid = false;
 		private final RedisConnection conn;
+		private boolean isTransactionSyncronisationActive;
 
 		public RedisConnectionHolder(RedisConnection conn) {
 			this.conn = conn;
@@ -166,6 +206,22 @@ public abstract class RedisConnectionUtils {
 
 		public void unbound() {
 			this.isVoid = true;
+		}
+
+		/**
+		 * @return
+		 * @since 1.3
+		 */
+		public boolean isTransactionSyncronisationActive() {
+			return isTransactionSyncronisationActive;
+		}
+
+		/**
+		 * @param isTransactionSyncronisationActive
+		 * @since 1.3
+		 */
+		public void setTransactionSyncronisationActive(boolean isTransactionSyncronisationActive) {
+			this.isTransactionSyncronisationActive = isTransactionSyncronisationActive;
 		}
 	}
 }

@@ -75,6 +75,7 @@ import org.springframework.util.CollectionUtils;
  */
 public class RedisTemplate<K, V> extends RedisAccessor implements RedisOperations<K, V> {
 
+	private boolean enableTransactionSupport = false;
 	private boolean exposeConnection = false;
 	private boolean initialized = false;
 	private boolean enableDefaultSerializer = true;
@@ -166,7 +167,7 @@ public class RedisTemplate<K, V> extends RedisAccessor implements RedisOperation
 		RedisConnectionFactory factory = getConnectionFactory();
 		RedisConnection conn = null;
 		try {
-			conn = RedisConnectionUtils.getConnection(factory);
+			conn = RedisConnectionUtils.bindConnection(factory, enableTransactionSupport);
 
 			boolean existingConnection = TransactionSynchronizationManager.hasResource(factory);
 
@@ -198,7 +199,7 @@ public class RedisTemplate<K, V> extends RedisAccessor implements RedisOperation
 
 		RedisConnectionFactory factory = getConnectionFactory();
 		// bind connection
-		RedisConnectionUtils.bindConnection(factory);
+		RedisConnectionUtils.bindConnection(factory, enableTransactionSupport);
 		try {
 			return session.execute(this);
 		} finally {
@@ -216,7 +217,7 @@ public class RedisTemplate<K, V> extends RedisAccessor implements RedisOperation
 
 		RedisConnectionFactory factory = getConnectionFactory();
 		// bind connection
-		RedisConnectionUtils.bindConnection(factory);
+		RedisConnectionUtils.bindConnection(factory, enableTransactionSupport);
 		try {
 			return execute(new RedisCallback<List<Object>>() {
 				public List<Object> doInRedis(RedisConnection connection) throws DataAccessException {
@@ -988,5 +989,15 @@ public class RedisTemplate<K, V> extends RedisAccessor implements RedisOperation
 
 	public <HK, HV> HashOperations<K, HK, HV> opsForHash() {
 		return new DefaultHashOperations<K, HK, HV>(this);
+	}
+
+	/**
+	 * If set to {@code true} {@link RedisTemplate} will use {@literal MULTI...EXEC|DISCARD} to keep track of operations.
+	 * 
+	 * @param enableTransactionSupport
+	 * @since 1.3
+	 */
+	public void setEnableTransactionSupport(boolean enableTransactionSupport) {
+		this.enableTransactionSupport = enableTransactionSupport;
 	}
 }
